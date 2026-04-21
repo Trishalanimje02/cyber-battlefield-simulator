@@ -64,6 +64,7 @@ const initialNetwork = [
 let network = JSON.parse(JSON.stringify(initialNetwork));
 let attackStartedAt = null;
 
+// 🧠 RENDER NETWORK
 function renderNetwork() {
   const networkDiv = document.getElementById("network");
   networkDiv.innerHTML = "";
@@ -72,14 +73,6 @@ function renderNetwork() {
     const card = document.createElement("div");
     card.className = `node-card ${node.status}`;
 
-    let badgeClass = node.status;
-    let badgeText = capitalize(node.status);
-
-    if (node.status === "critical") {
-      badgeClass = "critical";
-      badgeText = "Critical";
-    }
-
     card.innerHTML = `
       <div class="node-top">
         <div class="node-icon">${node.icon}</div>
@@ -87,7 +80,7 @@ function renderNetwork() {
       </div>
 
       <div>
-        <div class="badge ${badgeClass}">${badgeText}</div>
+        <div class="badge ${node.status}">${capitalize(node.status)}</div>
         <h3>${node.name}</h3>
         <div class="node-type">${node.type}</div>
       </div>
@@ -104,15 +97,14 @@ function renderNetwork() {
   updateMetrics();
 }
 
+// 📊 UPDATE METRICS
 function updateMetrics() {
   const total = network.length;
   const attacked = network.filter(n => n.status === "attacked").length;
   const blocked = network.filter(n => n.status === "blocked").length;
-  const safeOrCritical = network.filter(
-    n => n.status === "safe" || n.status === "critical"
-  ).length;
+  const safe = network.filter(n => n.status === "safe" || n.status === "critical").length;
 
-  const survival = Math.round((safeOrCritical / total) * 100);
+  const survival = Math.round((safe / total) * 100);
 
   document.getElementById("totalNodes").textContent = total;
   document.getElementById("attackedCount").textContent = attacked;
@@ -120,6 +112,7 @@ function updateMetrics() {
   document.getElementById("survivalRate").textContent = `${survival}%`;
 }
 
+// 📝 LOGS
 function addLog(message) {
   const logs = document.getElementById("logs");
   const li = document.createElement("li");
@@ -127,141 +120,86 @@ function addLog(message) {
   logs.prepend(li);
 }
 
+// 🔵 SYSTEM STATUS
 function setSystemStatus(type, text) {
   const status = document.getElementById("systemMode");
   status.className = `status-pill ${type}`;
   status.textContent = text;
 }
 
+// 🚨 START ATTACK (CONNECTED TO BACKEND)
 function startAttack() {
   const attackMode = document.getElementById("attackMode").value;
+  const defenseMode = document.getElementById("defenseMode").value;
+
   attackStartedAt = Date.now();
 
   setSystemStatus("attack", "Attack Running");
-  addLog(`Attack started in ${capitalize(attackMode)} mode.`);
+  addLog(`Attack started (${attackMode}) with defense (${defenseMode})`);
 
-  let targetNode = null;
-
-  if (attackMode === "aggressive") {
-    targetNode = network.reduce((max, node) =>
-      node.vulnerability > max.vulnerability ? node : max
-    );
-    addLog(`Aggressive scan selected weakest node ${targetNode.id}.`);
-  } else if (attackMode === "stealth") {
-    const safeNodes = network.filter(node => node.status === "safe");
-    if (safeNodes.length > 0) {
-      targetNode = safeNodes[0];
-      targetNode.status = "suspicious";
-      addLog(`${targetNode.name} is showing suspicious low-profile behavior.`);
-      renderNetwork();
-      return;
-    }
-  } else if (attackMode === "targeted") {
-    targetNode = network.find(node => node.critical) || network[0];
-    addLog(`Targeted attack focused on high-value node ${targetNode.id}.`);
-  }
-
-  if (targetNode) {
-    if (targetNode.status !== "blocked") {
-      targetNode.status = "attacked";
-      addLog(`${targetNode.name} has been compromised.`);
-    }
-  }
-
-  spreadAttack(attackMode);
-  renderNetwork();
+  fetch(`http://localhost:3000/attack?attackMode=${attackMode}&defenseMode=${defenseMode}`)
+    .then(res => res.json())
+    .then(data => {
+      applyBackendResult(data);
+    })
+    .catch(err => {
+      console.error(err);
+      addLog("Error connecting to backend ❌");
+    });
 }
 
-function spreadAttack(attackMode) {
-  let extraTargets = [];
+// 🧠 APPLY BACKEND DATA TO UI
+function applyBackendResult(data) {
+  const infected = data.infected;
+  const blocked = data.blocked;
 
-  if (attackMode === "aggressive") {
-    extraTargets = network
-      .filter(node => node.status === "safe")
-      .sort((a, b) => b.vulnerability - a.vulnerability)
-      .slice(0, 2);
-  } else if (attackMode === "targeted") {
-    extraTargets = network
-      .filter(node => node.status === "safe" && node.critical)
-      .slice(0, 1);
-  }
-
-  extraTargets.forEach(node => {
-    node.status = "attacked";
-    addLog(`${node.name} infected during lateral movement.`);
+  // reset all to safe
+  network.forEach(node => {
+    node.status = node.critical ? "critical" : "safe";
   });
-}
 
-function runDefense() {
-  const defenseMode = document.getElementById("defenseMode").value;
-  setSystemStatus("defense", "Defense Active");
-  addLog(`Defense activated in ${capitalize(defenseMode)} mode.`);
+  // map backend numbers → frontend nodes
+  infected.forEach((_, index) => {
+    if (network[index]) network[index].status = "attacked";
+  });
 
-  const attackedNodes = network.filter(node => node.status === "attacked");
-  const suspiciousNodes = network.filter(node => node.status === "suspicious");
+  blocked.forEach((_, index) => {
+    if (network[index]) network[index].status = "blocked";
+  });
 
-  if (defenseMode === "passive") {
-    suspiciousNodes.forEach(node => {
-      addLog(`Passive monitoring raised alert for ${node.name}.`);
-    });
-
-    attackedNodes.forEach(node => {
-      addLog(`Threat observed on ${node.name}, awaiting manual action.`);
-    });
+  // update detection time
+  if (data.metrics && data.metrics.detectionTime) {
+    document.getElementById("detectionTime").textContent = data.metrics.detectionTime;
   }
 
-  if (defenseMode === "active") {
-    attackedNodes.slice(0, 1).forEach(node => {
-      node.status = "blocked";
-      addLog(`${node.name} isolated by active scanning response.`);
-    });
-
-    suspiciousNodes.forEach(node => {
-      node.status = "blocked";
-      addLog(`${node.name} blocked after anomaly detection.`);
-    });
-  }
-
-  if (defenseMode === "auto") {
-    attackedNodes.forEach(node => {
-      node.status = "blocked";
-      addLog(`${node.name} auto-quarantined immediately.`);
-    });
-
-    suspiciousNodes.forEach(node => {
-      node.status = "blocked";
-      addLog(`${node.name} auto-blocked from suspicious activity.`);
-    });
-  }
-
-  if (attackStartedAt) {
-    const diffSeconds = ((Date.now() - attackStartedAt) / 1000).toFixed(1);
-    document.getElementById("detectionTime").textContent = `${diffSeconds}s`;
-    addLog(`Detection completed in ${diffSeconds}s.`);
-  }
-
+  addLog("Attack + Defense simulation completed.");
   renderNetwork();
 }
 
+// 🔄 RESET
 function resetSimulation() {
   network = JSON.parse(JSON.stringify(initialNetwork));
   attackStartedAt = null;
+
   document.getElementById("detectionTime").textContent = "--";
   document.getElementById("logs").innerHTML = "";
+
   setSystemStatus("reset", "System Reset");
   addLog("Simulation reset.");
 
   setTimeout(() => {
     setSystemStatus("idle", "System Idle");
-  }, 1200);
+  }, 1000);
 
   renderNetwork();
 }
 
+// 🔤 HELPER
 function capitalize(word) {
   return word.charAt(0).toUpperCase() + word.slice(1);
 }
 
+// INIT
 renderNetwork();
 setSystemStatus("idle", "System Idle");
-addLog("Frontend battlefield loaded successfully.");
+addLog("Frontend connected to backend successfully 🚀");
